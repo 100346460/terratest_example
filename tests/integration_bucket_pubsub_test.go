@@ -6,7 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
-	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +47,43 @@ func upload_file_to_bucket(ctx context.Context, client *storage.Client,
 
 }
 
+func assert_output_bucket_name_in_message(t *testing.T, ctx context.Context, pubsub_client *pubsub.Client,
+	subscriptionID string, output_bucket_name string) {
+	/*
+		This test creates:
+		- pubsub topioc
+		- storage bucket
+		- storage bucket notification
+		- subscription to topic
+
+		It then populates the bucket with an empty file
+		and validates the notification is updated within the pubsub topic
+		and the message contains the correct information in the subscription message that is pulled
+
+	*/
+
+	// Get a subscription handle
+	sub := pubsub_client.Subscription(subscriptionID)
+
+	// Create a context with a timeout to stop the message pulling after a certain duration
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Receive messages
+	err := sub.Receive(ctx, func(ctx context.Context, msg *pubsub.Message) {
+		// Handle the received message
+		msg_string := string(msg.Data)
+		fmt.Printf("Got message: %s\n", string(msg_string))
+		// Acknowledge the message to indicate it has been processed
+		msg.Ack()
+
+		assert.True(t, strings.Contains(msg_string, output_bucket_name))
+	})
+	if err != nil {
+		log.Fatalf("Error receiving message: %v", err)
+	}
+}
+
 func TestIntegrationBucketPubSub(t *testing.T) {
 	// Construct the terraform options with default retryable errors to handle the most common
 	// retryable errors in terraform testing.
@@ -62,6 +99,7 @@ func TestIntegrationBucketPubSub(t *testing.T) {
 			"location":          "US",
 			"topic_name":        "test_integration_bucket_topic",
 			"subscription_name": "test_integration_subscription",
+			"force_destroy":     true,
 		},
 	})
 
@@ -93,29 +131,7 @@ func TestIntegrationBucketPubSub(t *testing.T) {
 		log.Fatalf("Failed to create Pub/Sub client: %v", err)
 	}
 
-	// Get a subscription handle
-	sub := pubsub_client.Subscription(subscriptionID)
-
-	// Create a context with a timeout to stop the message pulling after a certain duration
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	// Receive messages
-	err = sub.Receive(ctx, func(ctx context.Context, msg *pubsub.Message) {
-		// Handle the received message
-		fmt.Printf("Got message: %s\n", string(msg.Data))
-
-		// Acknowledge the message to indicate it has been processed
-		msg.Ack()
-	})
-	if err != nil {
-		log.Fatalf("Error receiving message: %v", err)
-	}
-
-	// Run `terraform output` to get the values of output variables and check they have the expected values.
-	pattern := regexp.MustCompile(`-\p{L}{4}$`)
-
-	assert.True(t, pattern.MatchString(output_bucket_name))
+	assert_output_bucket_name_in_message(t, ctx, pubsub_client, subscriptionID, output_bucket_name)
 }
 
 /*
